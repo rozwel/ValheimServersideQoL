@@ -8,7 +8,10 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
 {
   public const string Id = "6f1f2a54-4f1b-4b1a-9f3e-2e6a0d5c8b71";
   const int MaxPositionAttempts = 3;
-  /// <summary>Rejects candidate positions with another Leviathan or ship within this distance
+  /// <summary>Depth (meters) below the water surface a Leviathan spawns at; the owner client's
+  /// Leviathan component rises it to the surface at m_maxSpeed (~1 m/s).</summary>
+  const float RiseDepth = 25f;
+  /// <summary>Rejects candidate positions with another Leviathan within this distance
   /// (meters) — one zone width, matching the ≤1-per-zone spacing of world generation.</summary>
   const float ClearanceRadius = 64f;
   readonly List<ZDO> _sectorObjects = [];
@@ -23,7 +26,6 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
   /// validation can run before <see cref="Initialize"/> (world-load ZDOs are processed first), so
   /// the tables cannot rely on Initialize ordering.</summary>
   static readonly Dictionary<int, ZoneSystem.ZoneVegetation> _vegByPrefabHash = [];
-  static readonly HashSet<int> _shipPrefabs = [];
   static bool _tablesReady;
 
   /// <summary>Tracker ZDOs are parked outside the world; their sector is never near a peer, so they
@@ -67,8 +69,17 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
   void TryRespawn(int prefabHash, Vector3 origin)
   {
     var pos = FindRespawnPosition(origin, _vegByPrefabHash.GetValueOrDefault(prefabHash));
-    pos.y = ZoneSystem.c_WaterLevel;
-    var spawned = Spawn(prefabHash, pos, Quaternion.Euler(0, UnityEngine.Random.value * 360f, 0));
+    // Spawn below the surface: the owner client's Leviathan component rises toward
+    // liquidLevel - m_floatOffset at m_maxSpeed, producing a "rise from the deeps" effect.
+    pos.y = ZoneSystem.c_WaterLevel - RiseDepth;
+    // Face the travel direction — the leviathan "swam" from its original spot.
+    // Zero offset (position fallback) gets a random facing.
+    var dx = pos.x - origin.x;
+    var dz = pos.z - origin.z;
+    var yaw = dx * dx + dz * dz < 1f
+      ? UnityEngine.Random.value * 360f
+      : Mathf.Atan2(dx, dz) * Mathf.Rad2Deg - 90f; // model's visual forward is +90 off its logical forward
+    var spawned = Spawn(prefabHash, pos, Quaternion.Euler(0, yaw, 0));
     Logger.LogDiagnosticInfo($"Spawned prefab {prefabHash} at {pos} (zdo {spawned.ZDO.m_uid})");
     spawned.Destroyed += static z => Processor.Instance<LeviathanProcessor>().Logger
       .LogDiagnosticInfo($"Spawned leviathan {z.ZDO.m_uid} destroyed (s_dead={z.ZDO.GetBool(ZDOVars.s_dead)})");
@@ -101,7 +112,6 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
       return;
     _tablesReady = true;
     _vegByPrefabHash.Clear();
-    _shipPrefabs.Clear();
     var logger = Processor.Instance<LeviathanProcessor>().Logger;
     foreach (var veg in ZoneSystem.instance.m_vegetation)
     {
@@ -116,11 +126,6 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
       foreach (var collider in veg.m_prefab.GetComponentsInChildren<Collider>(true))
         bounds.Encapsulate(collider.bounds);
       logger.LogDiagnosticInfo($"{veg.m_prefab.name} collider bounds: center={bounds.center}, extents={bounds.extents}");
-    }
-    foreach (var prefab in ZNetScene.instance.m_prefabs)
-    {
-      if (prefab.GetComponentInChildren<Ship>(true) is not null)
-        _shipPrefabs.Add(prefab.name.GetStableHashCode());
     }
   }
 
@@ -165,7 +170,7 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
 
   /// <summary>Returns a valid respawn position: a random direction and distance within the configured annulus around
   /// the original position that satisfies the prefab's vegetation spawn rules and is clear of other
-  /// Leviathans and ships. Falls back to the original position after <see cref="MaxPositionAttempts"/>
+  /// Leviathans. Falls back to the original position after <see cref="MaxPositionAttempts"/>
   /// failed tries.</summary>
   Vector3 FindRespawnPosition(Vector3 origin, ZoneSystem.ZoneVegetation? veg)
   {
@@ -183,8 +188,8 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
   }
 
   /// <summary>Mirrors the biome, altitude and ocean-depth checks world generation applies in
-  /// <see cref="ZoneSystem.PlaceVegetation"/>, plus a collision check against other Leviathans
-  /// and ships.</summary>
+  /// <see cref="ZoneSystem.PlaceVegetation"/>, plus a clearance check against other Leviathans.
+  /// Ships are not avoided — a leviathan surfacing under a hull collides with it.</summary>
   bool IsValidRespawnPosition(Vector3 pos, ZoneSystem.ZoneVegetation? veg)
   {
     var heightmap = GetHeightmap(pos);
@@ -207,7 +212,7 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     return !HasBlockedNeighbor(pos);
   }
 
-  /// <summary>True if another Leviathan or a ship is within <see cref="ClearanceRadius"/> of <paramref name="pos"/>.</summary>
+  /// <summary>True if another Leviathan is within <see cref="ClearanceRadius"/> of <paramref name="pos"/>.</summary>
   bool HasBlockedNeighbor(Vector3 pos)
   {
     ZDOMan.instance.FindSectorObjects(ZoneSystem.GetZone(pos), new SimulationDistance(1, 0, classic: true), _sectorObjects);
@@ -219,7 +224,7 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
         if (dz.x * dz.x + dz.z * dz.z > ClearanceRadius * ClearanceRadius)
           continue;
         var prefab = zdo.GetPrefab();
-        if (_vegByPrefabHash.ContainsKey(prefab) || _shipPrefabs.Contains(prefab))
+        if (_vegByPrefabHash.ContainsKey(prefab))
           return true;
       }
       return false;
