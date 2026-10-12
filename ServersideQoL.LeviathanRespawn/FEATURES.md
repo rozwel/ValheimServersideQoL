@@ -1,0 +1,1 @@
+- Respawns sunk Leviathans after a configurable delay at a validated offset position.  Makes it seem like they dive to get away, then resurface at a later time in a nearby location.
