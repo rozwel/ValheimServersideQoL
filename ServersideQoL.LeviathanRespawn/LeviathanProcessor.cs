@@ -42,7 +42,6 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     if (!Config.Instance.Enabled.Value)
       return;
     var nowMinutes = (int)(ZNet.instance.GetTimeSeconds() / 60);
-    Logger.LogDiagnosticInfo($"CheckExpiredRespawns: now={nowMinutes}, trackers={PlacedObjects.Count}");
     foreach (var tracker in PlacedObjects)
     {
       var prefabHash = __prefabHash.Get(tracker);
@@ -51,12 +50,10 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
       ZDOExtraData.GetData(tracker.ZDO.m_uid, out _, out var vec3s, out _, out _, out _, out _, out _, out _);
       if (vec3s is null)
         continue;
-      Logger.LogDiagnosticInfo($"  tracker {prefabHash}: {vec3s.Count} pending");
       foreach (var (key, position) in vec3s)
       {
         if (key > nowMinutes)
           continue;
-        Logger.LogDiagnosticInfo($"Respawning prefab {prefabHash} near {position} (key {key}, now {nowMinutes})");
         TryRespawn(prefabHash, position);
         _expiredKeys.Add(key);
       }
@@ -79,10 +76,8 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     var yaw = dx * dx + dz * dz < 1f
       ? UnityEngine.Random.value * 360f
       : Mathf.Atan2(dx, dz) * Mathf.Rad2Deg - 90f; // model's visual forward is +90 off its logical forward
-    var spawned = Spawn(prefabHash, pos, Quaternion.Euler(0, yaw, 0));
-    Logger.LogDiagnosticInfo($"Spawned prefab {prefabHash} at {pos} (zdo {spawned.ZDO.m_uid})");
-    spawned.Destroyed += static z => Processor.Instance<LeviathanProcessor>().Logger
-      .LogDiagnosticInfo($"Spawned leviathan {z.ZDO.m_uid} destroyed (s_dead={z.ZDO.GetBool(ZDOVars.s_dead)})");
+    Spawn(prefabHash, pos, Quaternion.Euler(0, yaw, 0));
+    Logger.LogDiagnosticInfo($"Respawned prefab {prefabHash} at {pos}");
   }
 
   /// <summary>Returns the tracker ZDO for <paramref name="prefabHash"/>, creating it parked outside
@@ -96,7 +91,7 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     }
     var tracker = PlaceObject(TrackerPosition, Prefabs.Sconce, Quaternion.identity, CreatorMarkers.ProcessorOwned);
     __prefabHash.Set(tracker, prefabHash);
-    Logger.LogInfo($"Created respawn tracker for prefab hash {prefabHash}");
+    Logger.LogDiagnosticInfo($"Created respawn tracker for prefab hash {prefabHash}");
     return tracker;
   }
 
@@ -112,20 +107,10 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
       return;
     _tablesReady = true;
     _vegByPrefabHash.Clear();
-    var logger = Processor.Instance<LeviathanProcessor>().Logger;
     foreach (var veg in ZoneSystem.instance.m_vegetation)
     {
-      if (veg.m_prefab?.GetComponentInChildren<Leviathan>(true) is not { } leviathan)
-        continue;
-      _vegByPrefabHash[veg.m_prefab.name.GetStableHashCode()] = veg;
-      logger.LogDiagnosticInfo($"ZoneVegetation '{veg.m_name}' ({veg.m_prefab.name}): biome={veg.m_biome}, biomeArea={veg.m_biomeArea}, " +
-        $"minOceanDepth={veg.m_minOceanDepth}, maxOceanDepth={veg.m_maxOceanDepth}, minAltitude={veg.m_minAltitude}, maxAltitude={veg.m_maxAltitude}, " +
-        $"groupRadius={veg.m_groupRadius}, minDistanceFromCenter={veg.m_minDistanceFromCenter}, playerCheckSize={leviathan.m_playerCheckSize}");
-
-      var bounds = new Bounds(Vector3.zero, Vector3.zero);
-      foreach (var collider in veg.m_prefab.GetComponentsInChildren<Collider>(true))
-        bounds.Encapsulate(collider.bounds);
-      logger.LogDiagnosticInfo($"{veg.m_prefab.name} collider bounds: center={bounds.center}, extents={bounds.extents}");
+      if (veg.m_prefab?.GetComponentInChildren<Leviathan>(true) is not null)
+        _vegByPrefabHash[veg.m_prefab.name.GetStableHashCode()] = veg;
     }
   }
 
@@ -134,7 +119,6 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     if (!prefabInfo.IsLeviathan)
       return ProcessResult.UnregisterProcessor;
 
-    Logger.LogDiagnosticInfo($"Watching Leviathan at {zdo.ZDO.GetPosition()}");
     zdo.Destroyed += OnLeviathanDestroyed;
     return ProcessResult.UnregisterProcessor;
   }
@@ -165,7 +149,7 @@ public sealed class LeviathanProcessor : Processor<LeviathanProcessor.PrefabInfo
     while (ZDOExtraData.GetVec3(tracker.ZDO.m_uid, key, out _))
       key++;
     tracker.ZDO.Set(key, zdo.ZDO.GetPosition());
-    Logger.LogDiagnosticInfo($"Leviathan sank at {zdo.ZDO.GetPosition()}, respawn scheduled for minute {key} (now {now}, in {key - now} min)");
+    Logger.LogDiagnosticInfo($"Leviathan sank at {zdo.ZDO.GetPosition()}, respawn scheduled in {key - now} in-game minute(s)");
   }
 
   /// <summary>Returns a valid respawn position: a random direction and distance within the configured annulus around
